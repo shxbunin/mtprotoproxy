@@ -1,16 +1,55 @@
-version: '2.0'
 services:
-  mtprotoproxy:
-    build: .
+  db:
+    image: postgres:16-alpine
     restart: unless-stopped
-    network_mode: "host"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mtproxy}
+      POSTGRES_USER: ${POSTGRES_USER:-mtproxy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
     volumes:
-        - ./config.py:/home/tgproxy/config.py
-        - ./mtprotoproxy.py:/home/tgproxy/mtprotoproxy.py
-        - /etc/localtime:/etc/localtime:ro
-    logging:
-        driver: "json-file"
-        options:
-            max-file: "10"
-            max-size: "10m"
-#    mem_limit: 1024m
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build:
+      context: .
+      dockerfile: app/Dockerfile.bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+
+  sync:
+    build:
+      context: .
+      dockerfile: app/Dockerfile.sync
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - proxy_runtime:/runtime
+
+  proxy:
+    build:
+      context: .
+      dockerfile: proxy/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PROXY_PORT:-443}:${PROXY_PORT:-443}"
+    volumes:
+      - proxy_runtime:/runtime
+
+volumes:
+  postgres_data:
+  proxy_runtime:
