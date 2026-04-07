@@ -24,6 +24,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./wireguard:/wireguard:ro
 
   sync:
     build:
@@ -50,6 +52,56 @@ services:
     volumes:
       - proxy_runtime:/runtime
 
+  admin:
+    build:
+      context: .
+      dockerfile: app/Dockerfile.admin
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8080"
+    volumes:
+      - proxy_runtime:/runtime
+    networks:
+      admin_net:
+        ipv4_address: 172.29.0.10
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      TZ: ${TZ:-UTC}
+      SERVERURL: ${PROXY_PUBLIC_HOST}
+      SERVERPORT: ${WIREGUARD_PORT:-51820}
+      PEERS: ${WIREGUARD_PEERS:-admin}
+      PEERDNS: ${WIREGUARD_PEER_DNS:-1.1.1.1}
+      INTERNAL_SUBNET: ${WIREGUARD_SUBNET:-10.13.13.0}
+      ALLOWEDIPS: ${WIREGUARD_ALLOWED_IPS:-10.13.13.0/24,172.29.0.0/24}
+      PERSISTENTKEEPALIVE_PEERS: ${WIREGUARD_PERSISTENT_KEEPALIVE:-25}
+    ports:
+      - "${WIREGUARD_PORT:-51820}:51820/udp"
+    volumes:
+      - ./wireguard:/config
+      - /lib/modules:/lib/modules:ro
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      admin_net:
+        ipv4_address: 172.29.0.2
+
 volumes:
   postgres_data:
   proxy_runtime:
+
+networks:
+  admin_net:
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

@@ -33,6 +33,7 @@ PROXY_MODE = os.getenv("PROXY_MODE", "tls").strip().lower() or "tls"
 TLS_DOMAIN = os.getenv("PROXY_TLS_DOMAIN", "www.google.com")
 MASK_HOST = os.getenv("PROXY_MASK_HOST", "").strip() or TLS_DOMAIN
 ACTIVE_USERS_FILE = Path(os.getenv("PROXY_ACTIVE_USERS_FILE", "/runtime/active_users.json"))
+LAST_SEEN_FILE = Path(os.getenv("PROXY_LAST_SEEN_FILE", "/runtime/last_seen.json"))
 METRICS_PORT_RAW = os.getenv("PROXY_METRICS_PORT", "").strip()
 METRICS_WHITELIST_RAW = os.getenv("PROXY_METRICS_WHITELIST", "127.0.0.1,::1")
 

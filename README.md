@@ -1,10 +1,13 @@
 # MTProto Proxy Bot
 
-Проект разворачивает три основных сервиса:
+Проект разворачивает четыре основных сервиса:
 
-- `bot`: Telegram-бот на `aiogram`, который по `/start` показывает выбор подписки и отдает кнопку `Подключить` с `tg://proxy`-ссылкой;
+- `bot`: Telegram-бот на `aiogram`, который по `/start` сразу выдает конфиг на 3 месяца и кнопку `Подключить` с `tg://proxy`-ссылкой;
+- `bot`: Telegram-бот на `aiogram`, который по `/start` сразу выдает конфиг на 3 месяца и по `/admin` отправляет WireGuard-конфиг администраторам;
 - `sync`: фоновый сервис, который читает активные подписки из PostgreSQL и выгружает активные MTProto-секреты в runtime-файл;
-- `proxy`: отдельный экземпляр `mtprotoproxy`, который читает только активных пользователей и автоматически перезагружает конфиг при изменениях.
+- `proxy`: отдельный экземпляр `mtprotoproxy`, который читает только активных пользователей, автоматически перезагружает конфиг при изменениях и пишет `last online` в runtime-файл;
+- `admin`: web-панель с таблицей выданных конфигов, доступная только из внутренней Docker-сети;
+- `wireguard`: VPN-контейнер, который дает доступ к `admin` без ручной установки WireGuard на сервере.
 
 Оригинальный проект прокси сохранен в `.source/`. Он используется только как reference snapshot. Рабочая копия прокси лежит в `proxy/`.
 
@@ -13,18 +16,21 @@
 - `.source/`: исходный снимок оригинального проекта, не трогаем и не импортируем.
 - `app/`: бот, SQLAlchemy-модели, сервисы подписок и синхронизации.
 - `proxy/`: рабочая копия `mtprotoproxy` и обвязка для runtime reload.
-- `docker-compose.yml`: запуск `db`, `bot`, `sync`, `proxy`.
+- `docker-compose.yml`: запуск `db`, `bot`, `sync`, `proxy`, `admin`, `wireguard`.
 
 ## Как это работает
 
 1. Пользователь отправляет `/start` боту.
-2. Бот показывает inline-кнопки: `1 месяц`, `3 месяца`, `1 год`.
-3. После выбора бот создает или продлевает подписку в PostgreSQL.
-4. Для пользователя хранится постоянный MTProto secret.
-5. Бот отправляет сообщение с кнопкой `Подключить` и `tg://proxy` ссылкой.
-6. Сервис `sync` периодически выбирает только активные подписки и записывает их в `/runtime/active_users.json`.
-7. Сервис `proxy` замечает изменение файла и отправляет `SIGUSR2` дочернему `mtprotoproxy`, чтобы тот перечитал `proxy/config.py`.
-8. После истечения срока подписки пользователь автоматически исчезает из runtime-конфига, и прокси перестает принимать его secret.
+2. Бот сразу создает или продлевает подписку на 3 месяца в PostgreSQL.
+3. Для пользователя хранится постоянный MTProto secret.
+4. Бот отправляет сообщение с кнопкой `Подключить` и `tg://proxy` ссылкой.
+5. Сервис `sync` периодически выбирает только активные подписки и записывает их в `/runtime/active_users.json`.
+6. Сервис `proxy` замечает изменение файла и отправляет `SIGUSR2` дочернему `mtprotoproxy`, чтобы тот перечитал `proxy/config.py`.
+7. После успешного подключения через прокси `proxy` обновляет `/runtime/last_seen.json`.
+8. Сервис `admin` показывает таблицу с Telegram ID, username, конфигом, последним онлайном и датой окончания подписки.
+9. Сервис `wireguard` создает клиентский VPN-конфиг и дает доступ к `admin` по внутреннему адресу `http://172.29.0.10:8080`.
+10. После истечения срока подписки пользователь автоматически исчезает из runtime-конфига, и прокси перестает принимать его secret.
+11. Команда `/admin` работает только для Telegram ID из списка администраторов и отправляет `.conf` файл plus кнопку на статистику.
 
 Никаких уведомлений об окончании подписки не отправляется.
 
@@ -73,6 +79,10 @@ cp .env.example .env
 - `PROXY_PORT`: внешний порт прокси, обычно `443`.
 - `PROXY_MODE`: `tls`, `secure` или `classic`. Для большинства случаев лучше `tls`.
 - `PROXY_TLS_DOMAIN`: домен для TLS-режима. Лучше указать реальный существующий домен.
+- `ADMIN_USERNAME`: логин для локальной admin-панели.
+- `ADMIN_PASSWORD`: пароль для локальной admin-панели.
+- `ADMIN_TELEGRAM_IDS`: список Telegram ID админов через запятую, которым доступна команда `/admin`.
+- `WIREGUARD_PORT`: UDP-порт для WireGuard, обычно `51820`.
 
 Пример:
 
@@ -103,8 +113,23 @@ PROXY_METRICS_PORT=
 PROXY_METRICS_WHITELIST=127.0.0.1,::1
 
 PROXY_ACTIVE_USERS_FILE=/runtime/active_users.json
+PROXY_LAST_SEEN_FILE=/runtime/last_seen.json
 EXPORT_INTERVAL_SECONDS=60
 PROXY_WATCH_INTERVAL_SECONDS=5
+
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=change-me-admin
+ADMIN_TELEGRAM_IDS=123456789
+ADMIN_STATS_URL=http://172.29.0.10:8080
+ADMIN_WG_CONFIG_PATH=/wireguard/peer_admin/peer_admin.conf
+
+TZ=UTC
+WIREGUARD_PORT=51820
+WIREGUARD_PEERS=admin
+WIREGUARD_PEER_DNS=1.1.1.1
+WIREGUARD_SUBNET=10.13.13.0
+WIREGUARD_ALLOWED_IPS=10.13.13.0/24,172.29.0.0/24
+WIREGUARD_PERSISTENT_KEEPALIVE=25
 ```
 
 ### 4. Открыть порт на сервере
@@ -114,9 +139,10 @@ PROXY_WATCH_INTERVAL_SECONDS=5
 ```bash
 sudo ufw allow 443/tcp
 sudo ufw allow 22/tcp
+sudo ufw allow 51820/udp
 ```
 
-Если меняете `PROXY_PORT`, откройте именно его.
+Если меняете `PROXY_PORT` или `WIREGUARD_PORT`, откройте именно эти порты.
 
 ### 5. Собрать и запустить сервисы
 
@@ -136,15 +162,19 @@ docker compose ps
 docker compose logs -f bot
 docker compose logs -f sync
 docker compose logs -f proxy
+docker compose logs -f wireguard
+docker compose logs -f admin
 ```
 
 ### 6. Проверить работу
 
 1. Откройте бота в Telegram.
 2. Отправьте `/start`.
-3. Выберите срок подписки.
-4. Нажмите `Подключить`.
-5. Telegram должен предложить добавить прокси.
+3. Нажмите `Подключить`.
+4. Telegram должен предложить добавить прокси.
+5. После первого запуска заберите клиентский WireGuard-конфиг из `wireguard/peer_admin/peer_admin.conf`.
+6. Импортируйте его в приложение WireGuard на своем устройстве.
+7. Подключитесь к VPN и откройте `http://172.29.0.10:8080`.
 
 ## Переменные окружения
 
@@ -175,8 +205,35 @@ docker compose logs -f proxy
 ### Runtime синхронизация
 
 - `PROXY_ACTIVE_USERS_FILE`: путь к shared runtime-файлу с активными пользователями.
+- `PROXY_LAST_SEEN_FILE`: путь к shared runtime-файлу с временем последнего подключения по каждому пользователю.
 - `EXPORT_INTERVAL_SECONDS`: как часто сервис `sync` пересобирает runtime-файл.
 - `PROXY_WATCH_INTERVAL_SECONDS`: как часто `proxy/run_proxy.py` проверяет изменение runtime-файла.
+
+### Admin-панель
+
+- `ADMIN_USERNAME`: логин Basic Auth.
+- `ADMIN_PASSWORD`: пароль Basic Auth.
+- `ADMIN_TELEGRAM_IDS`: кому бот отвечает на `/admin`.
+- `ADMIN_STATS_URL`: ссылка, которая будет открываться кнопкой из команды `/admin`.
+- `ADMIN_WG_CONFIG_PATH`: путь внутри контейнера `bot` к WireGuard `.conf` файлу.
+
+Панель не публикуется в интернет и доступна только через WireGuard по адресу `http://172.29.0.10:8080`.
+
+### WireGuard
+
+- `WIREGUARD_PORT`: внешний UDP-порт WireGuard.
+- `WIREGUARD_PEERS`: имена peer-конфигов, которые контейнер создаст автоматически.
+- `WIREGUARD_PEER_DNS`: DNS, который получит клиент.
+- `WIREGUARD_SUBNET`: внутренняя VPN-подсеть WireGuard.
+- `WIREGUARD_ALLOWED_IPS`: сети, которые клиент будет отправлять в VPN. По умолчанию сюда включены сама VPN-подсеть и подсеть admin-панели.
+- `WIREGUARD_PERSISTENT_KEEPALIVE`: keepalive для клиентов за NAT.
+
+Сгенерированные клиентские файлы появятся в `wireguard/peer_admin/peer_admin.conf` и `wireguard/peer_admin/peer_admin.png`.
+
+## Команды бота
+
+- `/start`: выдает текущий конфиг, а если активной подписки нет - создает новую на 3 месяца.
+- `/admin`: для Telegram ID из `ADMIN_TELEGRAM_IDS` отправляет WireGuard-конфиг и кнопку `Открыть статистику`; для остальных пользователей бот молчит.
 
 ## Команды обслуживания
 
@@ -210,6 +267,8 @@ docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
 - Telegram-пользователь;
 - его постоянный proxy secret;
+- его `tg://proxy` конфиг можно пересчитать из secret и env-настроек;
+- время последнего онлайна через прокси хранится в runtime-файле `last_seen.json`;
 - дата окончания текущей подписки;
 - история всех активаций подписки.
 

@@ -6,6 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+from mtproxy_manager.bot.handlers.admin import router as admin_router
 from mtproxy_manager.bot.handlers.start import router as start_router
 from mtproxy_manager.core.config import get_settings
 from mtproxy_manager.core.logging import setup_logging
@@ -22,6 +23,7 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dispatcher = Dispatcher()
+    dispatcher.include_router(admin_router)
     dispatcher.include_router(start_router)
 
     await dispatcher.start_polling(bot)

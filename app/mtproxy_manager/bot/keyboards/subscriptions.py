@@ -22,5 +22,13 @@ def build_subscription_keyboard() -> InlineKeyboardMarkup:
 
 def build_connect_keyboard(proxy_link: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Подключить", url=proxy_link)]]
+        inline_keyboard=[[
+            InlineKeyboardButton(text="Подключить", url=proxy_link, style="success")
+        ]]
+    )
+
+
+def build_admin_keyboard(stats_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Открыть статистику", url=stats_url)]]
     )

@@ -27,3 +27,9 @@ class TelegramUserRepository:
             .order_by(TelegramUser.telegram_id.asc())
         )
         return result.scalars().all()
+
+    async def get_all_users(self) -> Sequence[TelegramUser]:
+        result = await self._session.execute(
+            select(TelegramUser).order_by(TelegramUser.subscription_expires_at.desc().nullslast(), TelegramUser.telegram_id.asc())
+        )
+        return result.scalars().all()

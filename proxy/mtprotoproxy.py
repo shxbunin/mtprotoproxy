@@ -5,6 +5,7 @@ import socket
 import urllib.parse
 import urllib.request
 import collections
+import json
 import time
 import datetime
 import hmac
@@ -19,6 +20,7 @@ import signal
 import os
 import stat
 import traceback
+from pathlib import Path
 
 
 TG_DATACENTER_PORT = 443
@@ -91,6 +93,7 @@ last_clients_with_time_skew = {}
 last_clients_with_same_handshake = collections.Counter()
 proxy_start_time = 0
 proxy_links = []
+user_last_online = {}
 
 stats = collections.Counter()
 user_stats = collections.defaultdict(collections.Counter)
@@ -410,6 +413,61 @@ def ensure_users_in_user_stats():
 def init_proxy_start_time():
     global proxy_start_time
     proxy_start_time = time.time()
+
+
+def get_last_seen_file_path():
+    path = getattr(config, "LAST_SEEN_FILE", None)
+    if not path:
+        return None
+    return Path(path)
+
+
+def load_last_online_state():
+    global user_last_online
+
+    path = get_last_seen_file_path()
+    if path is None:
+        user_last_online = {}
+        return
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        user_last_online = {}
+        return
+    except json.JSONDecodeError:
+        user_last_online = {}
+        return
+
+    users = payload.get("users", {})
+    if not isinstance(users, dict):
+        user_last_online = {}
+        return
+
+    user_last_online = {
+        str(user): str(last_seen)
+        for user, last_seen in users.items()
+        if isinstance(user, str) and isinstance(last_seen, str)
+    }
+
+
+def persist_last_online_state():
+    path = get_last_seen_file_path()
+    if path is None:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"users": user_last_online}, sort_keys=True, ensure_ascii=True, indent=2) + "\n"
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(payload, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def update_user_last_online(user):
+    global user_last_online
+
+    user_last_online[user] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    persist_last_online_state()
 
 
 def update_stats(**kw_stats):
@@ -1638,6 +1696,7 @@ async def handle_client(reader_clt, writer_clt):
     cl_ip, cl_port = peer
 
     update_user_stats(user, connects=1)
+    update_user_last_online(user)
 
     connect_directly = (not config.USE_MIDDLE_PROXY or disable_middle_proxy)
 
@@ -2233,6 +2292,7 @@ def setup_signals():
     if hasattr(signal, 'SIGUSR2'):
         def reload_signal(signum, frame):
             init_config()
+            load_last_online_state()
             ensure_users_in_user_stats()
             apply_upstream_proxy_settings()
             print("Config reloaded", flush=True, file=sys.stderr)
@@ -2350,6 +2410,7 @@ def create_utilitary_tasks(loop):
 
 def main():
     init_config()
+    load_last_online_state()
     ensure_users_in_user_stats()
     apply_upstream_proxy_settings()
     init_ip_info()
